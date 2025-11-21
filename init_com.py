@@ -22,19 +22,24 @@ except:
 print("\n正在嘗試透過 ProgID 'SKCOM.SKCenterLib' 初始化...")
 
 try:
-    # 嘗試建立 SKCenterLib 物件
-    # 這會強制 comtypes 去註冊表中查找並生成 python 介面檔
-    obj = comtypes.client.CreateObject("SKCOM.SKCenterLib")
+    # 直接指定 DLL 路徑 (x64)
+    dll_path = r"c:\Users\user\source\repos\capital_python\CapitalAPI_2.13.57_PythonExample\元件\x64\SKCOM.dll"
+    print(f"正在嘗試直接載入 DLL: {dll_path}")
     
-    print("✅ SKCenterLib 物件建立成功！")
+    # GetModule 會直接讀取 DLL 並生成介面，不需要註冊表
+    comtypes.client.GetModule(dll_path)
     
-    # 這裡非常關鍵：CreateObject 後，comtypes 應該已經生成了 SKCOMLib
-    # 我們嘗試動態載入它
+    print("✅ GetModule 成功！介面已生成。")
     
-    print("正在驗證 import...")
+    # 驗證 import
     import comtypes.gen.SKCOMLib as sk
     print(f"✅ 成功匯入: {sk}")
-    print("\n環境修復完成！您現在可以執行主程式了。")
+    
+    # 嘗試建立物件 (這步仍可能需要註冊，但如果 GetModule 成功，至少解決了 import 問題)
+    # obj = comtypes.client.CreateObject(sk.SKCenterLib)
+    # print("✅ 物件建立成功！")
+
+    print("\n環境修復完成！請嘗試執行主程式。")
     
 except OSError as e:
     print(f"\n❌ OSError: {e}")
