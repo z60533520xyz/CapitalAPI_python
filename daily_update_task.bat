@@ -8,7 +8,7 @@ echo 時間: %date% %time%
 echo ========================================
 
 :: 執行整合更新程式 (不需互動)
-:: --days=1 表示只更新最近 1 天的週期K線 (可根據需求調整)
+:: 程式會根據週期類型自動調整資料範圍（分鐘K用7天，日K用60天，週K用180天，月K用365天）
 python integrated_updater.py --days=1 >> daily_task.log 2>&1
 
 if %ERRORLEVEL% EQU 0 (

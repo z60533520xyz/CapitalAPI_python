@@ -390,20 +390,37 @@ class CycleDataUpdater:
         Args:
             code: 商品代碼
             exchange: 交易所
-            days: 更新最近幾天的資料
+            days: 基準天數（會根據週期類型自動調整）
         """
         logging.info(f"開始更新 {code} ({exchange}) 的週期K線資料...")
         
-        # 取得分鐘K線資料
-        minute_klines = self.get_minute_klines(code, exchange, days)
-        
-        if not minute_klines:
-            logging.warning(f"{code} ({exchange}) 沒有分鐘K線資料")
-            return
+        # 定義每個週期所需的最小天數
+        cycle_days_map = {
+            1: 7,      # 1分鐘K線：7天
+            2: 7,      # 5分鐘K線：7天
+            3: 7,      # 15分鐘K線：7天
+            4: 7,      # 30分鐘K線：7天
+            5: 7,      # 60分鐘K線：7天
+            6: 60,     # 日K線：60天
+            7: 180,    # 週K線：180天（約26週）
+            8: 365,    # 月K線：365天（12個月）
+            9: 14      # 2小時K線：14天
+        }
         
         # 生成並寫入各週期K線
         for cycle in range(1, 10):  # 1-9 個週期
-            logging.info(f"生成週期 {cycle} 的K線...")
+            # 計算此週期所需的天數
+            required_days = cycle_days_map.get(cycle, days)
+            
+            logging.info(f"生成週期 {cycle} 的K線（使用 {required_days} 天資料）...")
+            
+            # 取得對應天數的分鐘K線資料
+            minute_klines = self.get_minute_klines(code, exchange, required_days)
+            
+            if not minute_klines:
+                logging.warning(f"{code} ({exchange}) 週期 {cycle} 沒有分鐘K線資料")
+                continue
+            
             cycle_klines = self.generate_cycle_klines(minute_klines, cycle)
             
             if cycle_klines:
