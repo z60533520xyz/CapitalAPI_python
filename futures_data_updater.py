@@ -8,6 +8,7 @@ import pymysql
 import configparser
 import logging
 import tkinter as tk
+import pythoncom
 
 # 區域：日誌配置
 logging.basicConfig(level=logging.INFO,
@@ -16,6 +17,7 @@ logging.basicConfig(level=logging.INFO,
 
 class FuturesDataUpdater:
     def __init__(self, root, config_path='config.ini'):
+        pythoncom.CoInitialize()
         self.root = root
         self._load_config(config_path)
         
@@ -32,6 +34,14 @@ class FuturesDataUpdater:
         self.domestic_products_received = False
         self.overseas_products_received = False
         self.pending_kline_requests = []
+        
+        # 資料庫連線（重用單一連線）
+        self.db_conn = None
+        self.db_cursor = None
+        
+        # 批次儲存緩衝區
+        self.pending_kline_data = []
+        self.batch_size = 1000  # 每1000筆儲存一次
         
         self._initialize_com_objects()
         self._initialize_database()
@@ -77,38 +87,41 @@ class FuturesDataUpdater:
 
     def _initialize_database(self):
         try:
-            with pymysql.connect(**self.db_config) as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS domestic_futures (
-                            product_id VARCHAR(20) PRIMARY KEY,
-                            name VARCHAR(50),
-                            exchange VARCHAR(10)
-                        );
-                    """)
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS overseas_futures (
-                            product_id VARCHAR(20) PRIMARY KEY,
-                            name VARCHAR(100),
-                            exchange VARCHAR(20)
-                        );
-                    """)
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS daily_kline (
-                            product_id VARCHAR(20),
-                            date DATE,
-                            open DECIMAL(12, 5),
-                            high DECIMAL(12, 5),
-                            low DECIMAL(12, 5),
-                            close DECIMAL(12, 5),
-                            volume BIGINT,
-                            PRIMARY KEY (product_id, date)
-                        );
-                    """)
-                conn.commit()
-            logging.info("資料庫及資料表確認/建立成功。")
+            # 建立持久連線
+            self.db_conn = pymysql.connect(**self.db_config)
+            self.db_cursor = self.db_conn.cursor()
+            
+            # 建立表格
+            self.db_cursor.execute("""
+                CREATE TABLE IF NOT EXISTS domestic_futures (
+                    product_id VARCHAR(20) PRIMARY KEY,
+                    name VARCHAR(50),
+                    exchange VARCHAR(10)
+                );
+            """)
+            self.db_cursor.execute("""
+                CREATE TABLE IF NOT EXISTS overseas_futures (
+                    product_id VARCHAR(20) PRIMARY KEY,
+                    name VARCHAR(100),
+                    exchange VARCHAR(20)
+                );
+            """)
+            self.db_cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_kline (
+                    product_id VARCHAR(20),
+                    date DATE,
+                    open DECIMAL(12, 5),
+                    high DECIMAL(12, 5),
+                    low DECIMAL(12, 5),
+                    close DECIMAL(12, 5),
+                    volume BIGINT,
+                    PRIMARY KEY (product_id, date)
+                );
+            """)
+            self.db_conn.commit()
+            logging.info("資料庫初始化成功，建立持久連線。")
         except Exception as e:
-            logging.error(f"初始化資料庫時發生錯誤: {e}")
+            logging.error(f"資料庫初始化時發生錯誤: {e}")
             raise
 
     # --- 步驟函數 ---
@@ -205,10 +218,6 @@ class FuturesDataUpdater:
                 
                 is_overseas = (exchange != 'TAIFEX')
                 
-                # 用戶要求暫時跳過國內商品
-                if not is_overseas:
-                    logging.info(f"跳過國內商品: {code}")
-                    continue
 
                 # API 請求格式:
                 # 國內: code (例如 TX00)
@@ -233,6 +242,8 @@ class FuturesDataUpdater:
 
     def step_5_process_kline_requests(self):
         if not self.pending_kline_requests:
+            # 儲存剩餘的資料
+            self._flush_kline_buffer()
             logging.info("=== 所有作業完成 ===")
             self.root.quit()
             return
@@ -269,7 +280,8 @@ class FuturesDataUpdater:
                 logging.info(f"嘗試海外 K線請求: {request_id}")
                 nCode = self.skOSQ.SKOSQuoteLib_RequestKLine(request_id, 0)
         else:
-            nCode = self.skQ.SKQuoteLib_RequestKLine(req['id'], 4, 1)
+            # 請求分鐘K線 (0=分鐘, 1=日, 2=週, 3=月, 4=Tick)
+            nCode = self.skQ.SKQuoteLib_RequestKLineAM(req['code'], 0, 1, 0)
             
         if nCode != 0:
             logging.error(f"請求 K線失敗: {nCode}")
@@ -288,27 +300,73 @@ class FuturesDataUpdater:
         else:
             self.root.after(200, self.check_kline_data)
 
-    def _save_kline_to_db(self, df):
+    def _add_kline_to_buffer(self, df):
+        """將K線資料加入緩衝區"""
         if df.empty: return
+        
+        # 轉換為 tuple 列表並加入緩衝區
+        data_tuples = [tuple(x) for x in df.to_numpy()]
+        self.pending_kline_data.extend(data_tuples)
+        
+        # 如果達到批次大小，立即儲存
+        if len(self.pending_kline_data) >= self.batch_size:
+            self._flush_kline_buffer()
+    
+    def _flush_kline_buffer(self):
+        """將緩衝區的資料批次寫入資料庫"""
+        if not self.pending_kline_data:
+            return
+        
         try:
-            with pymysql.connect(**self.db_config) as conn:
-                with conn.cursor() as cursor:
-                    # 資料表: captial_kline
-                    # 欄位: date, code, volume, open, high, low, close, exchange
-                    sql = """
-                        INSERT INTO captial_kline 
-                        (`date`, `code`, `volume`, `open`, `high`, `low`, `close`, `exchange`) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE 
-                        `volume`=VALUES(`volume`), `open`=VALUES(`open`), `high`=VALUES(`high`), 
-                        `low`=VALUES(`low`), `close`=VALUES(`close`)
-                    """
-                    data_tuples = [tuple(x) for x in df.to_numpy()]
-                    cursor.executemany(sql, data_tuples)
-                conn.commit()
-            # logging.info(f"儲存 {len(df)} 筆 K線至 captial_kline") # 為提升效能已移除
+            # 使用持久連線
+            if self.db_conn is None or not self.db_conn.open:
+                logging.warning("資料庫連線已關閉，重新建立連線")
+                self.db_conn = pymysql.connect(**self.db_config)
+                self.db_cursor = self.db_conn.cursor()
+            
+            # 去除批次中的重複資料（保留最後一筆）
+            # tuple 格式: (date, code, volume, open, high, low, close, exchange)
+            unique_data = {}
+            for row in self.pending_kline_data:
+                # 使用 (date, code, exchange) 作為 key
+                key = (row[0], row[1], row[7])  # date, code, exchange
+                unique_data[key] = row  # 後面的會覆蓋前面的（保留最新）
+            
+            deduplicated_data = list(unique_data.values())
+            
+            if len(deduplicated_data) < len(self.pending_kline_data):
+                removed = len(self.pending_kline_data) - len(deduplicated_data)
+                logging.info(f"🔄 批次中移除 {removed} 筆重複資料")
+            # 新增日誌，顯示去重後的筆數（即使沒有移除）
+            # logging.info(f"✅ 批次去重完成，保留 {len(deduplicated_data)} 筆資料（原 {len(self.pending_kline_data)} 筆）")           # 欄位: date, code, volume, open, high, low, close, exchange
+            sql = """
+                INSERT INTO captial_kline 
+                (`date`, `code`, `volume`, `open`, `high`, `low`, `close`, `exchange`) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                `volume`=VALUES(`volume`), `open`=VALUES(`open`), `high`=VALUES(`high`), 
+                `low`=VALUES(`low`), `close`=VALUES(`close`)
+            """
+            
+            self.db_cursor.executemany(sql, deduplicated_data)
+            self.db_conn.commit()
+            
+            count = len(deduplicated_data)
+            self.pending_kline_data = []  # 清空緩衝區
+            
+            logging.info(f"✅ 批次儲存 {count} 筆 K線至 captial_kline")
+            
         except Exception as e:
             logging.error(f"DB Error: {e}")
+            # 嘗試重新連線
+            try:
+                if self.db_conn:
+                    self.db_conn.close()
+                self.db_conn = pymysql.connect(**self.db_config)
+                self.db_cursor = self.db_conn.cursor()
+                logging.info("資料庫重新連線成功")
+            except Exception as e2:
+                logging.error(f"重新連線失敗: {e2}")
 
     def _parse_kline(self, kline_str, code, exchange):
         if not kline_str: return pd.DataFrame()
@@ -319,13 +377,24 @@ class FuturesDataUpdater:
                 # 格式: 日期,開盤,最高,最低,收盤,成交量
                 if len(parts) == 6:
                     try:
-                        # 日期格式可能不同？根據日誌假設為 YYYY/MM/DD
+                        # 分鐘K線日期格式可能是 YYYY/MM/DD HH:MM:SS 或 YYYY/MM/DD HH:MM
                         date_str = parts[0].strip()
-                        # 將 2025/11/20 轉換為 2025-11-20
-                        date_obj = datetime.strptime(date_str, '%Y/%m/%d')
+                        
+                        # 嘗試多種日期格式
+                        date_obj = None
+                        for fmt in ['%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M', '%Y/%m/%d']:
+                            try:
+                                date_obj = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if date_obj is None:
+                            logging.warning(f"無法解析日期格式: {date_str}")
+                            continue
                         
                         data.append({
-                            'date': date_obj.strftime('%Y-%m-%d'),
+                            'date': date_obj,  # 保留完整的 datetime 物件
                             'code': code,
                             'volume': int(parts[5]),
                             'open': float(parts[1]),
@@ -334,9 +403,19 @@ class FuturesDataUpdater:
                             'close': float(parts[4]),
                             'exchange': exchange
                         })
-                    except (ValueError, IndexError):
+                    except (ValueError, IndexError) as e:
+                        logging.warning(f"解析K線資料失敗: {line}, 錯誤: {e}")
                         pass
         return pd.DataFrame(data)
+
+    def cleanup(self):
+        """清理資源"""
+        try:
+            if self.db_conn:
+                self.db_conn.close()
+            logging.info("資源清理完成")
+        except:
+            pass
 
 # --- 事件處理器 ---
 
@@ -362,7 +441,7 @@ class SKQuoteEvents:
         if bstrStockNo == self.app.current_kline_id:
             self.app.kline_received = True
             df = self.app._parse_kline(bstrData, self.app.current_request['code'], self.app.current_request['exchange'])
-            self.app._save_kline_to_db(df)
+            self.app._add_kline_to_buffer(df)  # 改為加入緩衝區
 
 class SKOSQuoteEvents:
     def __init__(self, app):
@@ -377,7 +456,7 @@ class SKOSQuoteEvents:
         # logging.info(f"[SKOSQuoteLib] 收到海外 K線: {bstrStockNo}") # 為提升效能已移除
         self.app.kline_received = True
         df = self.app._parse_kline(bstrData, self.app.current_request['code'], self.app.current_request['exchange'])
-        self.app._save_kline_to_db(df)
+        self.app._add_kline_to_buffer(df)  # 改為加入緩衝區
 
 
 class SKOrderEvents:
@@ -387,9 +466,12 @@ class SKOrderEvents:
         self.app.overseas_products.append(bstrData)
 
 
+
+
 def main():
     root = tk.Tk()
-    root.withdraw() # 隱藏主視窗
+    root.iconify() # 最小化視窗，避免干擾但保持 API 運作
+    # root.withdraw() # 隱藏主視窗 (會導致 API 錯誤 2017)
     
     try:
         app = FuturesDataUpdater(root)
