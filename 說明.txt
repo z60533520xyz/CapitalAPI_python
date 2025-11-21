@@ -1,0 +1,16 @@
+取得K線資料。
+宣告
+Long SKOSQuoteLib_RequestKLine([in] BSTR bstrStockNo, [in]SHORT sKLineType);
+參數
+bstrStockNo
+海期商品代號，例如 CME,ES1609。
+sKLineType
+0 = 分鐘線。
+1 = 日線。
+2 = 週線。
+3 = 月線。
+回傳值
+0表示成功，其餘非0數值都表示失敗。錯誤代碼可參考對照表。
+備註
+*若bstrStockNo為無效之商品代碼”，則不會送出此次K線查詢。
+K線資料OnKLineData事件通知取得。
