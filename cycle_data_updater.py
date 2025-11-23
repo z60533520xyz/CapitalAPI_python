@@ -6,12 +6,20 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 
 # 日誌配置
+from logging.handlers import RotatingFileHandler
+import os
+
+# 確保 log 資料夾存在
+log_dir = 'log'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('cycle_updater.log', 'a', 'utf-8')
+        RotatingFileHandler(os.path.join(log_dir, 'cycle_updater.log'), maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
     ]
 )
 

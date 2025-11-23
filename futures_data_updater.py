@@ -11,9 +11,18 @@ import tkinter as tk
 import pythoncom
 
 # 區域：日誌配置
+from logging.handlers import RotatingFileHandler
+import os
+
+# 確保 log 資料夾存在
+log_dir = 'log'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    handlers=[logging.StreamHandler(), logging.FileHandler('updater.log', 'a', 'utf-8')])
+                    handlers=[logging.StreamHandler(), 
+                              RotatingFileHandler(os.path.join(log_dir, 'updater.log'), maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')])
 
 class FuturesDataUpdater:
     def __init__(self, root, config_path='config.ini'):
