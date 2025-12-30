@@ -1,0 +1,1 @@
+The best performing CL0000 strategy is: CLMACrossoverStrategy_CL0000_60m with total PnL: 28520.00
