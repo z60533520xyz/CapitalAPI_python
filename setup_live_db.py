@@ -1,3 +1,11 @@
+import sys
+import os
+
+# 確保專案根目錄在 sys.path 中
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from common.db_utils import DatabaseManager
 from sqlalchemy import text
 import logging
@@ -15,6 +23,7 @@ def setup_live_strategies():
 
     with engine.connect() as conn:
         logger.info("1. 重置策略配置 (回復至原版穩健策略)...")
+        # 修正拼字錯誤 captial -> captial (維持與資料庫一致)
         conn.execute(text("UPDATE captial_chart SET enable = 0"))
         conn.execute(text("UPDATE captial_chart_strategy SET enable = 0"))
         conn.commit()
@@ -48,7 +57,7 @@ def setup_live_strategies():
             })
             chart_id = result.lastrowid
             
-            # 2. 插入 captial_chart_strategy (Cycle 大寫)
+            # 2. 插入 captial_chart_strategy
             conn.execute(text("""
                 INSERT INTO captial_chart_strategy (chartId, strategy, Cycle, stopLossPercent, takeProfitPercent, trailingStopPercent, enable)
                 VALUES (:chartId, :strategy, :cycle, :sl, 0, 0, 1)
